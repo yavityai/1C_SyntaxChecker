@@ -12,6 +12,7 @@ from .bsl_release import (
     compare_versions,
     download_exec_jar,
     fetch_latest_release_tag,
+    jar_is_valid,
     read_pinned_version,
     release_page_url,
     set_pinned_version,
@@ -137,38 +138,65 @@ def cmd_test(args: argparse.Namespace) -> int:
 def cmd_update_bsl(args: argparse.Namespace) -> int:
     root = _project_root()
     pinned = read_pinned_version(root)
+    jar_path = vendor_jar_path(root)
 
-    if args.version:
+    if args.offline:
+        latest = pinned
+        target = args.version or pinned
+    elif args.version:
         target = args.version
         latest = target
-        needs_update = compare_versions(pinned, target) != 0 or args.yes
     else:
-        latest = fetch_latest_release_tag()
+        try:
+            latest = fetch_latest_release_tag(fallback=pinned if args.yes else None)
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            print(
+                "Tip: use --offline to refresh jar for pinned bsl.version without GitHub API.",
+                file=sys.stderr,
+            )
+            return 1
+        if latest == pinned and args.yes and not args.version:
+            print(
+                "GitHub API unavailable; using pinned version from bsl.version.",
+                file=sys.stderr,
+            )
         target = latest
-        needs_update = compare_versions(pinned, latest) < 0
 
-    print(f"Pinned: {pinned} | Latest: {latest}")
+    version_changed = compare_versions(pinned, target) != 0
+    needs_jar = args.refresh or not jar_is_valid(jar_path)
+    needs_update = version_changed or (args.yes and needs_jar)
+
+    print(f"Pinned: {pinned} | Target: {target}")
 
     if args.check:
+        if args.offline:
+            return 1 if needs_jar else 0
         if args.version:
-            return 1 if compare_versions(pinned, target) != 0 else 0
-        return 1 if compare_versions(pinned, latest) < 0 else 0
+            return 1 if version_changed else 0
+        try:
+            remote_latest = fetch_latest_release_tag()
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        return 1 if compare_versions(pinned, remote_latest) < 0 else 0
 
     if not needs_update:
         print("Already up to date.")
         return 0
 
-    if not args.yes and not args.version:
+    if not args.yes and not args.version and not args.offline:
         answer = input(f"Download {target} and update bsl.version? [y/N] ").strip().lower()
         if answer not in {"y", "yes"}:
             print("Cancelled.")
             return 0
 
-    set_pinned_version(target, root)
-    print(f"Updated pinned version to {target}")
+    if version_changed:
+        set_pinned_version(target, root)
+        print(f"Updated pinned version to {target}")
     print(f"Release: {release_page_url(target)}")
     download_exec_jar(target, force=True)
-    print(f"Saved jar: {vendor_jar_path(root)}")
+    print(f"Saved jar: {jar_path}")
     if docker_engine_ready():
         print("Rebuilding Docker image...")
         run_compose(["build"], cwd=str(root))
@@ -218,6 +246,8 @@ def build_parser() -> argparse.ArgumentParser:
     update_parser = subparsers.add_parser("update-bsl", help="Check or update BSL Language Server")
     update_parser.add_argument("--check", action="store_true", help="Exit 1 if update available")
     update_parser.add_argument("--yes", action="store_true", help="Apply update without prompt")
+    update_parser.add_argument("--offline", action="store_true", help="Skip GitHub API; use pinned bsl.version")
+    update_parser.add_argument("--refresh", action="store_true", help="Re-download jar even if version unchanged")
     update_parser.add_argument("--version", help="Pin specific BSL version")
 
     return parser

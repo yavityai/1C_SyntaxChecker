@@ -73,8 +73,13 @@ def _github_request(url: str) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
-def fetch_latest_release_tag() -> str:
-    payload = _github_request(GITHUB_API_LATEST)
+def fetch_latest_release_tag(*, fallback: str | None = None) -> str:
+    try:
+        payload = _github_request(GITHUB_API_LATEST)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        if fallback is not None:
+            return normalize_version(fallback)
+        raise RuntimeError(f"GitHub API unavailable: {exc}") from exc
     tag = payload.get("tag_name")
     if not tag:
         raise RuntimeError("GitHub API did not return tag_name")

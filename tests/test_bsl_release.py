@@ -75,6 +75,20 @@ def test_cli_update_check_exit_code(tmp_path: Path, monkeypatch):
         assert main(["update-bsl", "--check"]) == 0
 
 
+def test_cli_update_offline_yes(tmp_path: Path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    (tmp_path / "bsl.version").write_text("0.29.0\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    from syntaxcheck_mcp.cli import main
+
+    with patch("syntaxcheck_mcp.cli.download_exec_jar") as download_mock:
+        with patch("syntaxcheck_mcp.cli.docker_engine_ready", return_value=False):
+            download_mock.return_value = tmp_path / "vendor" / "bsl-language-server.jar"
+            assert main(["update-bsl", "--offline", "--yes"]) == 0
+            download_mock.assert_called_once()
+
+
 def test_mcp_snippet_json(tmp_path: Path, monkeypatch, capsys):
     (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
     (tmp_path / ".env").write_text("SYNTAXCHECK_PORT=8010\n", encoding="utf-8")

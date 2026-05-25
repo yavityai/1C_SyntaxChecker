@@ -85,6 +85,7 @@ python -m syntaxcheck_mcp.cli test
 python -m syntaxcheck_mcp.cli update-bsl   # проверить / обновить BSL LS
 python -m syntaxcheck_mcp.cli update-bsl --check   # exit 1 если есть новая версия
 python -m syntaxcheck_mcp.cli update-bsl --yes     # обновить без вопросов
+python -m syntaxcheck_mcp.cli update-bsl --offline --yes  # без GitHub API, jar по bsl.version
 ```
 
 Entry point: `syntaxcheck` (после `pip install -e .`).
