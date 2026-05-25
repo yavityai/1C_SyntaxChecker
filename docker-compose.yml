@@ -1,0 +1,21 @@
+services:
+  syntaxcheck-mcp:
+    build:
+      context: .
+      args:
+        BSL_VERSION: ${BSL_VERSION:-0.24.2}
+    container_name: syntaxcheck-mcp
+    ports:
+      - "${SYNTAXCHECK_PORT:-8010}:8002"
+    environment:
+      BSL_MEMORY_MB: ${BSL_MEMORY_MB:-2048}
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 8002
+      BSL_ANALYZE_TIMEOUT_SEC: ${BSL_ANALYZE_TIMEOUT_SEC:-120}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('127.0.0.1',8002),2); s.close()\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
