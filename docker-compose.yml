@@ -3,7 +3,7 @@ services:
     build:
       context: .
       args:
-        BSL_VERSION: ${BSL_VERSION:-0.24.2}
+        BSL_VERSION: ${BSL_VERSION:-0.29.0}
     container_name: syntaxcheck-mcp
     ports:
       - "${SYNTAXCHECK_PORT:-8010}:8002"

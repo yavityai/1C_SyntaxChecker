@@ -1,0 +1,81 @@
+name: BSL Release Check
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check-bsl-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Check for newer BSL Language Server
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          python -m syntaxcheck_mcp.cli update-bsl --check
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+
+      - name: Create issue if update available
+        if: steps.check.outputs.exit_code == '1'
+        uses: actions/github-script@v7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          script: |
+            const { execSync } = require("child_process");
+            const pinned = require("fs").readFileSync("bsl.version", "utf8").trim();
+            const latest = execSync("python -c \"from syntaxcheck_mcp.bsl_release import fetch_latest_release_tag; print(fetch_latest_release_tag())\"").toString().trim();
+            const title = `BSL Language Server ${latest} available (pinned: ${pinned})`;
+            const label = "bsl-update";
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: label,
+            });
+
+            if (existing.data.some(issue => issue.title === title)) {
+              console.log("Issue already exists, skipping.");
+              return;
+            }
+
+            const body = [
+              `A newer BSL Language Server release is available.`,
+              ``,
+              `- **Pinned:** ${pinned}`,
+              `- **Latest:** ${latest}`,
+              `- **Release:** https://github.com/1c-syntax/bsl-language-server/releases/tag/v${latest}`,
+              ``,
+              `## Update checklist`,
+              `- [ ] \`python -m syntaxcheck_mcp.cli update-bsl --yes\` (or \`./scripts/update-bsl.sh --yes\`)`,
+              `- [ ] \`python -m syntaxcheck_mcp.cli install\``,
+              `- [ ] \`python -m syntaxcheck_mcp.cli test\``,
+              `- [ ] Update memory-bank if needed`,
+            ].join("\n");
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: [label],
+            });
