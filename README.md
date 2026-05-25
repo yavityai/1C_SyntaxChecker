@@ -1,4 +1,4 @@
-# Syntax-Checker
+# 1C Syntax Checker
 
 MCP-сервер для проверки синтаксиса кода 1С (BSL) через [BSL Language Server](https://github.com/1c-syntax/bsl-language-server).
 
