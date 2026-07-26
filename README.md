@@ -2,7 +2,15 @@
 
 MCP-сервер для проверки синтаксиса кода 1С (BSL) через [BSL Language Server](https://github.com/1c-syntax/bsl-language-server) **v0.29.0** (JDK 21).
 
-Инструмент для Cursor и других MCP-клиентов: **`syntaxcheck(code)`** — передаёте фрагмент BSL, получаете JSON с ошибками и предупреждениями.
+Инструменты для Cursor и других MCP-клиентов — передаёте BSL, получаете JSON с ошибками и предупреждениями:
+
+| Инструмент | Когда использовать |
+|------------|--------------------|
+| **`syntaxcheck(code, min_severity="HINT")`** | Отдельный фрагмент кода. |
+| **`syntaxcheck_file(path, content=None, min_severity="HINT")`** | Один файл: `path` даёт BSL LS тип модуля, поэтому правила именования (CommonModule / ObjectModule / ManagerModule) применяются корректно. Если `content` не передан, сервер читает файл сам (локальная установка; внутри Docker передавайте `content`). |
+| **`syntaxcheck_project(files, min_severity="HINT")`** | Несколько файлов вместе — межмодульная диагностика и проверка консистентности именования по всей конфигурации. `files` — словарь `путь → код`. |
+
+**`min_severity`** — минимальный уровень для вывода: `ERROR`, `WARNING`, `INFORMATION`, `HINT` (по умолчанию `HINT` показывает всё; `WARNING`/`ERROR` убирают стилистический шум для кода от ИИ). Ответ содержит `status`, счётчики `summary` по уровням, отфильтрованный список `diagnostics` (каждый с полем `file`) и человекочитаемый `summary_text`.
 
 ## Требования
 
