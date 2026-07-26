@@ -82,15 +82,27 @@ def analyze_code(code: str) -> AnalyzeResult:
             "-q",
         ]
 
-        completed = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=BSL_ANALYZE_TIMEOUT_SEC,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=BSL_ANALYZE_TIMEOUT_SEC,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise BslAnalyzeError(
+                "Java runtime not found. Install a JRE/JDK and ensure 'java' is on PATH."
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise BslAnalyzeError(
+                f"BSL analysis timed out after {BSL_ANALYZE_TIMEOUT_SEC}s. "
+                "Increase BSL_ANALYZE_TIMEOUT_SEC or reduce the code size."
+            ) from exc
+        except OSError as exc:
+            raise BslAnalyzeError(f"Failed to start BSL Language Server: {exc}") from exc
 
         stderr = _filter_stderr(completed.stderr)
         diagnostics = load_reports(out_dir)

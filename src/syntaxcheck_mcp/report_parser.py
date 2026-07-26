@@ -105,7 +105,26 @@ def build_summary(diagnostics: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def format_response(summary: dict[str, Any]) -> str:
+def filter_diagnostics(summary: dict[str, Any], min_severity: str = "HINT") -> dict[str, Any]:
+    """Return a copy of the summary keeping only diagnostics at or above min_severity.
+
+    Severity threshold order: ERROR < WARNING < INFORMATION < HINT. The default
+    ("HINT") keeps everything; pass "WARNING" or "ERROR" to suppress noise.
+    Per-severity counts in ``summary`` are preserved (they reflect the full set).
+    """
+    threshold = SEVERITY_ORDER.get(_normalize_severity(min_severity), 3)
+    filtered = [
+        item
+        for item in summary.get("diagnostics", [])
+        if SEVERITY_ORDER.get(_normalize_severity(item.get("severity")), 99) <= threshold
+    ]
+    result = dict(summary)
+    result["min_severity"] = _normalize_severity(min_severity)
+    result["diagnostics"] = filtered
+    return result
+
+
+def format_response(summary: dict[str, Any], include_json: bool = True) -> str:
     lines = [
         f"Status: {summary['status']}",
         (
@@ -128,6 +147,7 @@ def format_response(summary: dict[str, Any]) -> str:
     if len(summary["diagnostics"]) > 50:
         lines.append(f"... and {len(summary['diagnostics']) - 50} more diagnostics")
 
-    lines.append("")
-    lines.append(json.dumps(summary, ensure_ascii=False, indent=2))
+    if include_json:
+        lines.append("")
+        lines.append(json.dumps(summary, ensure_ascii=False, indent=2))
     return "\n".join(lines)
