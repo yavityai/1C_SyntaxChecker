@@ -1,6 +1,7 @@
 import re
 import subprocess
 import tempfile
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -10,7 +11,7 @@ from .config import (
     BSL_JAR,
     BSL_MEMORY_MB,
 )
-from .report_parser import build_summary, format_response, load_reports
+from .report_parser import ReportLoadError, build_summary, format_response, load_reports
 
 
 PROGRESS_BAR_RE = re.compile(r"(\x1b\[[0-9;]*m)?[█░▓▒]+")
@@ -123,7 +124,7 @@ def _analyze_tree(files: dict[str, str]) -> AnalyzeResult:
             "java",
             f"-Xmx{BSL_MEMORY_MB}m",
             "-jar",
-            str(BSL_JAR),
+            str(BSL_JAR.resolve()),
             "analyze",
             "-s",
             str(src_dir),
@@ -132,7 +133,7 @@ def _analyze_tree(files: dict[str, str]) -> AnalyzeResult:
             "-r",
             "json",
             "-c",
-            str(BSL_CONFIG),
+            str(BSL_CONFIG.resolve()),
             "-q",
         ]
 
@@ -145,6 +146,7 @@ def _analyze_tree(files: dict[str, str]) -> AnalyzeResult:
                 errors="replace",
                 timeout=BSL_ANALYZE_TIMEOUT_SEC,
                 check=False,
+                cwd=src_dir,
             )
         except FileNotFoundError as exc:
             raise BslAnalyzeError(
@@ -159,7 +161,11 @@ def _analyze_tree(files: dict[str, str]) -> AnalyzeResult:
             raise BslAnalyzeError(f"Failed to start BSL Language Server: {exc}") from exc
 
         stderr = _filter_stderr(completed.stderr)
-        diagnostics = _relativize(load_reports(out_dir), src_dir)
+        try:
+            diagnostics = _relativize(load_reports(out_dir), src_dir)
+        except ReportLoadError as exc:
+            detail = stderr or completed.stdout.strip()
+            raise BslAnalyzeError(f"{exc}. Exit code: {completed.returncode}. {detail}") from exc
         summary = build_summary(diagnostics)
 
         if not diagnostics and completed.returncode != 0 and stderr:
@@ -226,3 +232,143 @@ def analyze_code_text(code: str) -> str:
     if result.stderr:
         response = f"{response}\n\nstderr:\n{result.stderr}"
     return response
+
+
+# Diagnostic metadata lives as .properties resources inside the BSL LS jar.
+_DIAG_RES_PREFIX = (
+    "BOOT-INF/classes/com/github/_1c_syntax/bsl/languageserver/diagnostics/"
+)
+_DIAG_SUFFIX = "Diagnostic"
+_rules_cache: dict[str, list[dict]] = {}
+
+
+def _decode_properties(raw: bytes) -> dict[str, str]:
+    """Parse a Java ``.properties`` resource (ISO-8859-1 + ``\\uXXXX`` escapes)."""
+    props: dict[str, str] = {}
+    for line in raw.decode("latin-1").splitlines():
+        line = line.strip()
+        if not line or line[0] in "#!" or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.strip()
+        try:
+            value = value.encode("latin-1").decode("unicode_escape")
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            pass
+        props[key.strip()] = value
+    return props
+
+
+def list_rules(language: str = "en", filter: str | None = None) -> list[dict]:
+    """List BSL Language Server diagnostics (rules) with human-readable names.
+
+    Reads diagnostic metadata straight from the bundled jar's resources, so it
+    needs no running language server. Results are cached per language.
+
+    Args:
+        language: ``en`` or ``ru`` for the display language of names/messages.
+        filter: Optional case-insensitive substring to match against a rule's
+            code or name.
+
+    Returns:
+        A sorted list of ``{"code", "name", "message"}`` dicts.
+    """
+    lang = "ru" if str(language).lower().startswith("ru") else "en"
+    if lang not in _rules_cache:
+        if not BSL_JAR.exists():
+            raise BslAnalyzeError(f"BSL Language Server JAR not found: {BSL_JAR}")
+        suffix = f"_{lang}.properties"
+        rules: list[dict] = []
+        try:
+            with zipfile.ZipFile(BSL_JAR) as jar:
+                for name in jar.namelist():
+                    if not name.startswith(_DIAG_RES_PREFIX) or not name.endswith(suffix):
+                        continue
+                    cls = name[len(_DIAG_RES_PREFIX):-len(suffix)]
+                    if not cls.endswith(_DIAG_SUFFIX):
+                        continue
+                    props = _decode_properties(jar.read(name))
+                    rules.append(
+                        {
+                            "code": cls[: -len(_DIAG_SUFFIX)],
+                            "name": props.get("diagnosticName", ""),
+                            "message": props.get("diagnosticMessage", ""),
+                        }
+                    )
+        except (zipfile.BadZipFile, OSError) as exc:
+            raise BslAnalyzeError(f"Failed to read rules from BSL jar: {exc}") from exc
+        rules.sort(key=lambda r: r["code"])
+        _rules_cache[lang] = rules
+
+    rules = _rules_cache[lang]
+    if filter:
+        needle = str(filter).lower()
+        rules = [
+            r for r in rules
+            if needle in r["code"].lower() or needle in r["name"].lower()
+        ]
+    return rules
+
+
+def format_code(code: str) -> str:
+    """Format a BSL snippet using BSL Language Server's built-in formatter.
+
+    The formatter rewrites files in place, so the snippet is written to a temp
+    file, formatted, then read back. Returns the reformatted source.
+    """
+    if not code or not code.strip():
+        raise BslAnalyzeError("Parameter 'code' must not be empty")
+    if not BSL_JAR.exists():
+        raise BslAnalyzeError(f"BSL Language Server JAR not found: {BSL_JAR}")
+
+    with tempfile.TemporaryDirectory(prefix="syntaxcheck_fmt_") as tmp:
+        src_dir = Path(tmp) / "src"
+        src_dir.mkdir()
+        target = src_dir / "Module.bsl"
+        _write_bsl_source(code, target)
+
+        cmd = [
+            "java",
+            f"-Xmx{BSL_MEMORY_MB}m",
+            "-jar",
+            str(BSL_JAR.resolve()),
+            "format",
+            "-s",
+            str(src_dir),
+            "-q",
+        ]
+
+        try:
+            completed = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=BSL_ANALYZE_TIMEOUT_SEC,
+                check=False,
+                cwd=src_dir,
+            )
+        except FileNotFoundError as exc:
+            raise BslAnalyzeError(
+                "Java runtime not found. Install a JRE/JDK and ensure 'java' is on PATH."
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise BslAnalyzeError(
+                f"BSL formatting timed out after {BSL_ANALYZE_TIMEOUT_SEC}s. "
+                "Increase BSL_ANALYZE_TIMEOUT_SEC or reduce the code size."
+            ) from exc
+        except OSError as exc:
+            raise BslAnalyzeError(f"Failed to start BSL Language Server: {exc}") from exc
+
+        data = target.read_bytes()
+        if data.startswith(BOM):
+            data = data[len(BOM):]
+        formatted = data.decode("utf-8", errors="replace")
+
+        stderr = _filter_stderr(completed.stderr)
+        if completed.returncode != 0:
+            detail = stderr or completed.stdout.strip() or f"exit code {completed.returncode}"
+            raise BslAnalyzeError(f"BSL formatting failed: {detail}")
+
+        return formatted

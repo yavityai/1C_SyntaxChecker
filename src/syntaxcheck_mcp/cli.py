@@ -122,15 +122,29 @@ def cmd_test(args: argparse.Namespace) -> int:
     request = urllib.request.Request(
         uri,
         data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
         method="POST",
     )
     print(f"Calling syntaxcheck on {uri} ...")
     try:
         with urllib.request.urlopen(request, timeout=180) as response:
-            print(response.read().decode("utf-8", errors="replace"))
+            payload = json.loads(response.read().decode("utf-8"))
+            print(json.dumps(payload, ensure_ascii=False))
+            result = payload.get("result", {})
+            report = result.get("structuredContent")
+            if report is None:
+                report = next((json.loads(item["text"]) for item in result.get("content", [])
+                               if item.get("type") == "text"), {})
+            if result.get("isError") or not any(
+                d.get("code") == "ParseError" for d in report.get("diagnostics", [])
+            ):
+                print("Smoke test failed: expected ParseError was not returned.", file=sys.stderr)
+                return 1
     except urllib.error.URLError as exc:
         print(f"Request failed: {exc}", file=sys.stderr)
+        return 1
+    except (ValueError, TypeError, AttributeError, KeyError) as exc:
+        print(f"Invalid MCP response: {exc}", file=sys.stderr)
         return 1
     return 0
 

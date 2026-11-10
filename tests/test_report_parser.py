@@ -1,11 +1,13 @@
 import json
 from pathlib import Path
+import pytest
 
 from syntaxcheck_mcp.report_parser import (
     build_summary,
     filter_diagnostics,
     format_response,
     load_reports,
+    ReportLoadError,
 )
 
 
@@ -91,3 +93,33 @@ def test_format_response_can_omit_json():
     text = format_response(summary, include_json=False)
     assert "Status: success" in text
     assert '"status"' not in text
+
+
+def test_real_report_preserves_files_and_duplicate_locations(tmp_path):
+    """Одинаковые ошибки разных модулей должны остаться отдельными."""
+    paths = [tmp_path / "Первый модуль.bsl", tmp_path / "Второй.bsl"]
+    diagnostic = {
+        "range": {"start": {"line": 2, "character": 3}},
+        "severity": "Error", "code": "SyntaxParseError", "message": "Ошибка",
+    }
+    payload = {"fileinfos": [
+        {"path": path.as_uri(), "diagnostics": [diagnostic]} for path in paths
+    ]}
+    (tmp_path / "bsl-json.json").write_text(json.dumps(payload), encoding="utf-8")
+    result = load_reports(tmp_path)
+    assert len(result) == 2
+    assert {Path(d["file"]) for d in result} == set(paths)
+    assert all(d["line"] == 3 and d["character"] == 4 for d in result)
+
+
+@pytest.mark.parametrize("content", [None, "{broken", "{}", "[]"])
+def test_missing_or_invalid_report_is_not_success(tmp_path, content):
+    if content is not None:
+        (tmp_path / "bsl-json.json").write_text(content, encoding="utf-8")
+    with pytest.raises(ReportLoadError):
+        load_reports(tmp_path)
+
+
+def test_valid_report_without_diagnostics(tmp_path):
+    (tmp_path / "bsl-json.json").write_text('{"fileinfos": []}', encoding="utf-8")
+    assert load_reports(tmp_path) == []

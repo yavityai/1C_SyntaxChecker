@@ -9,3 +9,5 @@ build/
 vendor/*.jar
 memory-bank/
 .cursor/
+.runtime/
+.audit/

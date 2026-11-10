@@ -6,6 +6,8 @@ from .bsl_runner import (
     analyze_code,
     analyze_file,
     analyze_files,
+    format_code,
+    list_rules,
     read_source_file,
 )
 from .report_parser import filter_diagnostics, format_response
@@ -89,11 +91,10 @@ def syntaxcheck_file(path: str, content: str | None = None, min_severity: str = 
 
 @mcp.tool()
 def syntaxcheck_project(files: dict[str, str], min_severity: str = "HINT") -> dict:
-    """Check several 1C (BSL) files together for cross-module diagnostics.
+    """Check several 1C (BSL) files together, preserving their source paths.
 
-    Analyzing files as a set (rather than one at a time) lets BSL Language Server
-    see the wider picture — useful for checking naming consistency and structure
-    across a configuration.
+    Only source contents are supplied, without configuration XML metadata.
+    This does not guarantee resolution of metadata objects or module calls.
 
     Args:
         files: Mapping of file path -> BSL source content. Paths should mirror
@@ -111,3 +112,48 @@ def syntaxcheck_project(files: dict[str, str], min_severity: str = "HINT") -> di
     except BslAnalyzeError as exc:
         return _error_report(exc)
     return _build_report(result, min_severity)
+
+
+@mcp.tool()
+def bsl_list_rules(language: str = "en", filter: str | None = None) -> dict:
+    """List the BSL Language Server diagnostics (rules) this server can report.
+
+    Useful for discovering rule codes to tune ``min_severity`` expectations or to
+    look up what a diagnostic code means. Reads metadata from the bundled engine,
+    so no analysis run is needed.
+
+    Args:
+        language: Display language for rule names/messages: 'en' or 'ru'.
+        filter: Optional case-insensitive substring matched against a rule's code
+            or name (e.g. 'naming', 'transaction', 'Query').
+
+    Returns:
+        ``{"status", "count", "rules"}`` where each rule is
+        ``{"code", "name", "message"}``.
+    """
+    try:
+        rules = list_rules(language=language, filter=filter)
+    except BslAnalyzeError as exc:
+        return {"status": "error", "error": str(exc), "count": 0, "rules": []}
+    return {"status": "ok", "count": len(rules), "rules": rules}
+
+
+@mcp.tool()
+def bsl_format_code(code: str) -> dict:
+    """Format a 1C (BSL) code snippet with BSL Language Server's formatter.
+
+    Applies canonical indentation and spacing. Handy for cleaning up
+    AI-generated code before committing it.
+
+    Args:
+        code: BSL source code to format.
+
+    Returns:
+        ``{"status", "formatted"}`` with the reformatted source, or an
+        ``{"status": "error", "error"}`` report on failure.
+    """
+    try:
+        formatted = format_code(code)
+    except BslAnalyzeError as exc:
+        return {"status": "error", "error": str(exc), "formatted": code}
+    return {"status": "ok", "formatted": formatted}

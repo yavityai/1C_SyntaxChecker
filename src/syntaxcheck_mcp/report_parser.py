@@ -1,9 +1,26 @@
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
+from urllib.request import url2pathname
 
 
 SEVERITY_ORDER = {"ERROR": 0, "WARNING": 1, "INFORMATION": 2, "HINT": 3, "INFO": 2}
+
+
+class ReportLoadError(RuntimeError):
+    """Отчёт анализатора отсутствует или не может быть прочитан."""
+
+
+def _source_path(value: str) -> str:
+    """Преобразует файловый URI анализатора в путь текущей платформы."""
+    if not value.startswith("file:"):
+        return value
+    parsed = urlsplit(value)
+    path = url2pathname(parsed.path)
+    if parsed.netloc and parsed.netloc != "localhost":
+        path = "//" + unquote(parsed.netloc) + path
+    return path
 
 
 def _normalize_severity(value: Any) -> str:
@@ -21,6 +38,11 @@ def _normalize_severity(value: Any) -> str:
 
 def _extract_diagnostics(node: Any, file_hint: str | None, out: list[dict[str, Any]]) -> None:
     if isinstance(node, dict):
+        # Путь принадлежит всему fileinfo, а не соседнему полю diagnostics.
+        local_hint = next(
+            (node[k] for k in ("file", "path", "filename") if isinstance(node.get(k), str)),
+            file_hint,
+        )
         if "message" in node and any(k in node for k in ("line", "range", "severity", "code")):
             line = node.get("line")
             character = node.get("character")
@@ -31,7 +53,7 @@ def _extract_diagnostics(node: Any, file_hint: str | None, out: list[dict[str, A
                 character = start.get("character", character)
             out.append(
                 {
-                    "file": node.get("file") or node.get("path") or file_hint or "Module.bsl",
+                    "file": _source_path(local_hint or "Module.bsl"),
                     "line": (int(line) + 1) if isinstance(line, int) else line,
                     "character": (int(character) + 1) if isinstance(character, int) else character,
                     "severity": _normalize_severity(node.get("severity")),
@@ -39,11 +61,10 @@ def _extract_diagnostics(node: Any, file_hint: str | None, out: list[dict[str, A
                     "message": str(node.get("message", "")),
                 }
             )
-        for key, value in node.items():
-            hint = file_hint
-            if key in {"file", "path", "filename"} and isinstance(value, str):
-                hint = value
-            _extract_diagnostics(value, hint, out)
+            # relatedInformation — пояснения к ошибке, не отдельные ошибки.
+            return
+        for value in node.values():
+            _extract_diagnostics(value, local_hint, out)
     elif isinstance(node, list):
         for item in node:
             _extract_diagnostics(item, file_hint, out)
@@ -70,14 +91,18 @@ def _dedupe(diagnostics: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def load_reports(output_dir: Path) -> list[dict[str, Any]]:
     diagnostics: list[dict[str, Any]] = []
-    if not output_dir.exists():
-        return diagnostics
-
-    for json_file in sorted(output_dir.rglob("*.json")):
+    reports = sorted(output_dir.rglob("*.json"))
+    if not reports:
+        raise ReportLoadError("BSL analysis produced no JSON report")
+    for json_file in reports:
         try:
             payload = json.loads(json_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ReportLoadError(f"Cannot read BSL report {json_file.name}: {exc}") from exc
+        if not isinstance(payload, dict) or not any(
+            isinstance(payload.get(key), list) for key in ("fileinfos", "issues")
+        ):
+            raise ReportLoadError(f"Unrecognized BSL report structure: {json_file.name}")
         _extract_diagnostics(payload, json_file.name, diagnostics)
 
     return _dedupe(diagnostics)
